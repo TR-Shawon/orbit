@@ -1,0 +1,60 @@
+name: Orbit — scan and deploy
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+  schedule:
+    - cron: '7 */2 * * *'
+      timezone: 'Asia/Dhaka'
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: orbit-pages
+  cancel-in-progress: false
+
+jobs:
+  scan-and-deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Checkout Orbit
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Run Orbit source scan
+        env:
+          ORBIT_PROFILE: ${{ secrets.ORBIT_PROFILE }}
+          ORBIT_SKIP_INITIAL_SCAN: '1'
+        run: node scanner-runner.js
+
+      - name: Prepare Pages site
+        run: |
+          rm -rf site
+          mkdir -p site/data
+          cp index.html manifest.json sw.js site/
+          cp data/feed.json data/events.json site/data/
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Orbit site
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: './site'
+
+      - name: Deploy Orbit
+        id: deployment
+        uses: actions/deploy-pages@v4
