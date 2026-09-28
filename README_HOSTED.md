@@ -1,32 +1,17 @@
-# Orbit — zero-cost hosted edition
+# Orbit V14 hosted edition
 
-Orbit is designed to run as a public static dashboard with a scheduled GitHub Actions scanner. No local `index.html` opening and no paid server are required.
+Open the GitHub Pages URL on your phone. GitHub Actions performs the scheduled scan even when the phone is offline.
 
-## Architecture
+The dashboard is intentionally read-only with respect to the hosted scan. “Refresh latest scan” reloads the newest Pages feed; it does not start a new GitHub Actions job.
 
-- Dashboard: GitHub Pages
-- Scanner: GitHub Actions, every 2 hours
-- Data: `data/feed.json` and `data/events.json` committed by the scanner
-- Sources: 87 configured source targets
-- Manual scan: GitHub Actions → Orbit scanner → Run workflow
+For a new scan immediately, use GitHub → Actions → Orbit — scan and deploy → Run workflow.
 
-GitHub's current documentation says standard GitHub-hosted runners are free and unlimited for public repositories, and scheduled workflows support cron. The scanner is deliberately bounded to 10 minutes per run.
+The scanner uses the `ORBIT_PROFILE` repository secret. The Profile screen in the browser is local to that device and is not automatically synchronized to the GitHub secret.
 
-## One-time setup
+V14 diagnostics distinguish:
+1. reachable sources
+2. listing candidates inspected
+3. current deadlines verified
+4. profile matches
 
-1. Create a **public** GitHub repository, e.g. `orbit`.
-2. Upload the contents of this folder to the repository root.
-3. In **Settings → Pages**, set the source to **GitHub Actions**.
-4. If you want the scanner to use the included Shawon profile, no secret is required; the built-in profile in `server.js` is used. For privacy, you can instead add a repository secret named `ORBIT_PROFILE` containing JSON for the profile.
-5. Run **Actions → Orbit scanner → Run workflow** once manually.
-6. GitHub Pages will provide the shareable URL under your GitHub account.
-
-## Important privacy note
-
-A public repository exposes its source code and committed `data/feed.json`. For a truly private personal profile, do not commit personal profile data; set `ORBIT_PROFILE` as a repository secret. The generated opportunity feed itself may still be visible to anyone who can access the Pages site.
-
-## Important reliability note
-
-The scanner monitors 87 configured sources; it does not guarantee that every source is reachable on every run. Each source is independently marked verified/unavailable, and partial failures do not erase successful matches.
-
-GitHub scheduled workflows can be automatically disabled after 60 days of repository inactivity. Open the repository or re-run the workflow if GitHub disables the schedule.
+This is important when a scan returns zero matches: zero can now be traced to source reachability, extraction, deadline verification, or matching rather than appearing as an unexplained empty inbox.

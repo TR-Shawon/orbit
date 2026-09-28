@@ -1,4 +1,4 @@
-# Orbit 13.1 — zero-cost GitHub Pages deployment
+# Orbit 14 — zero-cost GitHub Pages deployment — zero-cost GitHub Pages deployment
 
 This edition is designed for a **public GitHub repository + GitHub Pages + GitHub Actions**. The phone only opens the final URL; the scanner runs in GitHub Actions.
 
@@ -29,7 +29,9 @@ GitHub documents that Pages is available for public repositories on GitHub Free 
 
 ## Privacy
 
-The scanner profile is supplied through the `ORBIT_PROFILE` Actions secret. The generated public feed only retains non-sensitive matching configuration (`capacity` and `threshold`), not the user's name, date of birth, education or work-history profile.
+The scanner profile is supplied through the `ORBIT_PROFILE` Actions secret. The generated public feed does not publish the user's name, date of birth, education or work-history profile. The Profile page on the phone is a separate local copy; saving it does not modify the GitHub secret. If you change matching preferences, update the `ORBIT_PROFILE` secret in GitHub Settings → Secrets and variables → Actions.
+
+V14 also reports the scan pipeline in stages: source reachability → listing candidates → deadline-verified listings → profile matches. This makes a zero-match scan diagnosable instead of simply showing “0 matches”.
 
 Do not commit passwords, API keys, cookies or personal access tokens to the repository.
 
