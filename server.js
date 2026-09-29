@@ -4,8 +4,8 @@ const path=require('path');
 const {URL}=require('url');
 const PORT=Number(process.env.PORT||8787), ROOT=__dirname, DATA=path.join(ROOT,'data');
 const FEED=path.join(DATA,'feed.json'), EVENTS=path.join(DATA,'events.json');
-const TZ='Asia/Dhaka', SCAN_INTERVAL_MS=2*60*60*1000, FRESH_MS=2*60*60*1000+15*60*1000, FETCH_TIMEOUT=6000, MAX_CONCURRENCY=12, DETAIL_CONCURRENCY=5, MAX_DETAIL_PAGES=10;
-const DISCOVERY_FALLBACK_LIMIT=4;
+const TZ='Asia/Dhaka', SCAN_INTERVAL_MS=2*60*60*1000, FRESH_MS=2*60*60*1000+15*60*1000, FETCH_TIMEOUT=6500, MAX_CONCURRENCY=10, DETAIL_CONCURRENCY=5, MAX_DETAIL_PAGES=24;
+const DISCOVERY_FALLBACK_LIMIT=4, DETAIL_PER_SOURCE=8;
 let scanRunning=false, lastScanStarted=null, lastScanFinished=null;
 const UA='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36';
 if(!fs.existsSync(DATA))fs.mkdirSync(DATA,{recursive:true});
@@ -15,13 +15,64 @@ function write(f,d){fs.writeFileSync(f,JSON.stringify(d,null,2))}
 function dhakaToday(){const p=new Intl.DateTimeFormat('en-CA',{timeZone:TZ,year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date());const o=Object.fromEntries(p.map(x=>[x.type,x.value]));return `${o.year}-${o.month}-${o.day}`}
 function strip(s){return String(s||'').replace(/<script[\s\S]*?<\/script>/gi,' ').replace(/<style[\s\S]*?<\/style>/gi,' ').replace(/<noscript[\s\S]*?<\/noscript>/gi,' ').replace(/<[^>]+>/g,' ').replace(/&nbsp;/gi,' ').replace(/&amp;/gi,'&').replace(/&quot;/gi,'"').replace(/&#39;/gi,"'").replace(/&#x27;/gi,"'").replace(/\s+/g,' ').trim()}
 function abs(base,h){try{return new URL(h,base).toString()}catch{return null}}
-function links(html,base){const a=[],r=/<a\b[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;let m;while((m=r.exec(html)))a.push({href:abs(base,m[1]),text:strip(m[2])});return a}
+function links(html,base){const a=[],r=/<a\b[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;let m;while((m=r.exec(html)))a.push({href:abs(base,m[1]),text:strip(m[2]),start:m.index,end:r.lastIndex});return a}
 function slug(s){return String(s||'').toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'').slice(0,100)}
-function parseDate(s){if(!s)return null;s=String(s).replace(/[০-৯]/g,d=>'০১২৩৪৫৬৭৮৯'.indexOf(d)).replace(/,/g,' ').trim();let m=s.match(/\b(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{4})\b/);if(m){const a=Number(m[1]),b=Number(m[2]);return `${m[3]}-${String(b).padStart(2,'0')}-${String(a).padStart(2,'0')}`}m=s.match(/\b(\d{1,2})\s+(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+(\d{4})\b/i);if(m){const mo={jan:1,feb:2,mar:3,apr:4,may:5,jun:6,jul:7,aug:8,sep:9,sept:9,oct:10,nov:11,dec:12}[m[2].slice(0,3).toLowerCase()];return `${m[3]}-${String(mo).padStart(2,'0')}-${String(m[1]).padStart(2,'0')}`}m=s.match(/\b(Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?|Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?)\s+(\d{1,2})\s+(\d{4})\b/i);if(m){const mo={jan:1,feb:2,mar:3,apr:4,may:5,jun:6,jul:7,aug:8,sep:9,sept:9,oct:10,nov:11,dec:12}[m[1].slice(0,3).toLowerCase()];return `${m[3]}-${String(mo).padStart(2,'0')}-${String(m[2]).padStart(2,'0')}`}m=s.match(/\b(\d{4})-(\d{2})-(\d{2})\b/);return m?m[0]:null}
-function deadline(t){const raw=String(t||'');const json=/(?:\"|\b)(?:validThrough|applicationDeadline|applicationEndDate|closingDate|datePosted|deadlineDate)(?:\"|\b)\s*[:=]\s*(?:\"|')?([^\"'<>;,}]+)/i.exec(raw);if(json){const d=parseDate(json[1]);if(d&&/^(20\d{2})-/.test(d))return d}const time=/<time[^>]+datetime=[\"']([^\"']+)[\"'][^>]*>/i.exec(raw);if(time){const d=parseDate(time[1]);if(d)return d}const ps=[/(?:application\s+deadline|application\s+(?:last|closing)\s+date|last\s+date|apply\s+by|closing\s+date|application\s+ends?|deadline|শেষ\s*তারিখ|আবেদনের\s*শেষ)[^0-9A-Za-z০-৯]{0,90}([0-9]{1,2}[\/.\-][0-9]{1,2}[\/.\-][0-9]{4})/i,/(?:application\s+deadline|application\s+(?:last|closing)\s+date|last\s+date|apply\s+by|closing\s+date|application\s+ends?|deadline|শেষ\s*তারিখ|আবেদনের\s*শেষ)[^A-Za-z0-9০-৯]{0,90}([0-9]{1,2}\s+[A-Za-z]{3,9}\s+[0-9]{4})/i,/(?:application\s+deadline|application\s+(?:last|closing)\s+date|last\s+date|apply\s+by|closing\s+date|application\s+ends?|deadline|শেষ\s*তারিখ|আবেদনের\s*শেষ)[^0-9]{0,90}([A-Za-z]{3,9}\s+[0-9]{1,2}\s+[0-9]{4})/i,/(?:application\s+deadline|application\s+(?:last|closing)\s+date|last\s+date|apply\s+by|closing\s+date|application\s+ends?|deadline|শেষ\s*তারিখ|আবেদনের\s*শেষ)[^0-9]{0,90}([0-9]{4}-[0-9]{2}-[0-9]{2})/i];for(const p of ps){const m=raw.match(p);if(m){const d=parseDate(m[1]);if(d)return d}}return null}
+function normalizeDigits(s){return String(s||'').replace(/[০-৯]/g,d=>'০১২৩৪৫৬৭৮৯'.indexOf(d)).replace(/[,،]/g,' ').trim()}
+function parseDate(s){
+  if(!s)return null;
+  s=normalizeDigits(s).replace(/\b(\d{1,2})(?:st|nd|rd|th)\b/gi,'$1').replace(/\s+/g,' ').trim();
+  let m=s.match(/(?:^|\D)(\d{4})[-\/.](\d{1,2})[-\/.](\d{1,2})(?:\D|$)/);
+  if(m){const y=Number(m[1]),a=Number(m[2]),b=Number(m[3]);if(a>=1&&a<=12&&b>=1&&b<=31)return `${y}-${String(a).padStart(2,'0')}-${String(b).padStart(2,'0')}`}
+  m=s.match(/\b(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{2})\b/);if(m){let a=Number(m[1]),b=Number(m[2]),y=2000+Number(m[3]);if(a>12&&b<=12)[a,b]=[b,a];if(a>=1&&a<=12&&b>=1&&b<=31)return `${y}-${String(a).padStart(2,'0')}-${String(b).padStart(2,'0')}`}
+  m=s.match(/\b(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{4})\b/);
+  if(m){let a=Number(m[1]),b=Number(m[2]),y=Number(m[3]);if(a>12&&b<=12)[a,b]=[b,a];if(a>=1&&a<=12&&b>=1&&b<=31)return `${y}-${String(a).padStart(2,'0')}-${String(b).padStart(2,'0')}`}
+  const months={jan:1,feb:2,mar:3,apr:4,may:5,jun:6,jul:7,aug:8,sep:9,sept:9,oct:10,nov:11,dec:12};
+  m=s.match(/\b(\d{1,2})\s+(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s*,?\s+(\d{4})\b/i);
+  if(m){const mo=months[m[2].slice(0,3).toLowerCase()];if(mo)return `${m[3]}-${String(mo).padStart(2,'0')}-${String(m[1]).padStart(2,'0')}`}
+  m=s.match(/\b(\d{1,2})\s+(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s*,?\s+(\d{2})\b/i);if(m){const mo=months[m[2].slice(0,3).toLowerCase()];if(mo)return `${2000+Number(m[3])}-${String(mo).padStart(2,'0')}-${String(m[1]).padStart(2,'0')}`}
+  m=s.match(/\b(Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?|Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?)\s+(\d{1,2})(?:st|nd|rd|th)?\s*,?\s+(\d{4})\b/i);
+  if(m){const mo=months[m[1].slice(0,3).toLowerCase()];if(mo)return `${m[3]}-${String(mo).padStart(2,'0')}-${String(m[2]).padStart(2,'0')}`}
+  const bnMonths=[['জানুয়ারি','01'],['জানুয়ারি','01'],['ফেব্রুয়ারি','02'],['ফেব্রুয়ারি','02'],['মার্চ','03'],['এপ্রিল','04'],['মে','05'],['জুন','06'],['জুলাই','07'],['আগস্ট','08'],['সেপ্টেম্বর','09'],['অক্টোবর','10'],['নভেম্বর','11'],['ডিসেম্বর','12']];
+  for(const [name,mo] of bnMonths){let r2=new RegExp(`\\b([0-9]{1,2})\\s*${name}\\s*([0-9]{2})\\b`);let z=s.match(r2);if(z)return `${2000+Number(z[2])}-${mo}-${String(z[1]).padStart(2,'0')}`;let r=new RegExp(`\\b([0-9]{1,2})\\s*${name}\\s*([0-9]{4})\\b`);let x=s.match(r);if(x)return `${x[2]}-${mo}-${String(x[1]).padStart(2,'0')}`;r=new RegExp(`\\b${name}\\s*([0-9]{1,2})\\s*([0-9]{4})\\b`);x=s.match(r);if(x)return `${x[2]}-${mo}-${String(x[1]).padStart(2,'0')}`}
+  return null;
+}
+function structuredDates(raw){
+  const out=[];
+  const keyRe=/^(validThrough|applicationDeadline|applicationEndDate|closingDate|closingDateTime|deadline|deadlineDate|endDate|applicationEnd|applyBy|applyUntil)$/i;
+  const visit=(v,key='')=>{if(v==null)return;if(typeof v==='string'){if(keyRe.test(key)){const d=parseDate(v);if(d)out.push(d)}return}if(Array.isArray(v)){for(const x of v)visit(x,key);return}if(typeof v==='object'){for(const [k,x] of Object.entries(v))visit(x,k)}};
+  const scripts=String(raw||'').match(/<script[^>]+type=["']application\/ld\+json["'][^>]*>[\s\S]*?<\/script>/gi)||[];
+  for(const block of scripts){const body=block.replace(/^<script[^>]*>/i,'').replace(/<\/script>\s*$/i,'').trim();try{visit(JSON.parse(body))}catch{try{const cleaned=body.replace(/\/\*[\s\S]*?\*\//g,'').replace(/,\s*([}\]])/g,'$1');visit(JSON.parse(cleaned))}catch{}}}
+  const times=String(raw||'').match(/<time[^>]+datetime=["']([^"']+)["'][^>]*>/gi)||[];for(const a of times){const m=a.match(/datetime=["']([^"']+)["']/i);const d=parseDate(m?.[1]);if(d)out.push(d)}
+  const attrs=String(raw||'').match(/(?:data-(?:deadline|closing-date|application-deadline|end-date)|(?:validthrough|applicationdeadline|applicationenddate|closingdate|deadlinedate))\s*=\s*["']([^"']+)["']/gi)||[];
+  for(const a of attrs){const m=a.match(/=["']([^"']+)["']/);const d=parseDate(m?.[1]);if(d)out.push(d)}
+  return [...new Set(out)];
+}
+function deadline(t){
+  const original=String(t||'');
+  const structured=structuredDates(original);
+  const raw=normalizeDigits(original);if(structured.length)return structured[0];
+  const attrs=raw.match(/(?:data-deadline|data-closing-date|data-application-deadline|data-end-date)\s*=\s*["']([^"']+)["']/i);if(attrs){const d=parseDate(attrs[1]);if(d)return d}
+  const label=/(?:application\s+(?:deadline|closing\s+date|last\s+date|end(?:s|ing)?|closes?)|last\s+date\s+(?:of\s+)?(?:application|to\s+apply)|last\s+day\s+(?:of\s+)?application|apply\s+(?:by|before)|applications?\s+close|submission\s+(?:deadline|closes?)|registration\s+deadline|closing\s+date|closing\s+on|deadline|valid\s+(?:through|until)|end\s+date|আবেদনের\s*শেষ\s*(?:তারিখ|সময়|সময়)?|আবেদন(?:ের)?\s*(?:শেষ|সমাপ্ত)\s*(?:তারিখ|সময়|সময়)?|আবেদন\s+করার\s+শেষ\s+তারিখ|আবেদন\s+করতে\s+হবে|আবেদনের\s*সময়(?:সীমা)?|আবেদনের\s*সময়(?:সীমা)?|শেষ\s*তারিখ)/i;
+  const patterns=[
+    new RegExp(label.source+`[^0-9A-Za-z০-৯]{0,100}([0-9]{1,2}[\/.\-][0-9]{1,2}[\/.\-][0-9]{2}\\b)`,'i'),
+    new RegExp(label.source+`[^0-9A-Za-z০-৯]{0,100}([0-9]{1,2}(?:st|nd|rd|th)?\\s+[A-Za-z]{3,9}\\s+[0-9]{2}\\b)`,'i'),
+    new RegExp(label.source+`[^0-9A-Za-z০-৯]{0,100}([A-Za-z]{3,9}\\s+[0-9]{1,2}(?:st|nd|rd|th)?(?:,)?\\s+[0-9]{2}\\b)`,'i'),
+    new RegExp(label.source+`[^0-9A-Za-z০-৯]{0,100}([0-9]{1,2}[\\/.\\-][0-9]{1,2}[\\/.\\-][0-9]{4})`,'i'),
+    new RegExp(label.source+`[^0-9A-Za-z০-৯]{0,100}([0-9]{4}[\\/.\\-][0-9]{1,2}[\\/.\\-][0-9]{1,2})`,'i'),
+    new RegExp(label.source+`[^0-9A-Za-z০-৯]{0,100}([0-9]{1,2}(?:st|nd|rd|th)?\\s+[A-Za-z]{3,9}\\s+[0-9]{4})`,'i'),
+    new RegExp(label.source+`[^0-9A-Za-z০-৯]{0,100}([A-Za-z]{3,9}\\s+[0-9]{1,2}(?:st|nd|rd|th)?(?:,)?\\s+[0-9]{4})`,'i'),
+    new RegExp(label.source+`[^0-9A-Za-z০-৯]{0,100}([0-9]{1,2}(?:st|nd|rd|th)?\\s+(?:জানুয়ারি|জানুয়ারি|ফেব্রুয়ারি|ফেব্রুয়ারি|মার্চ|এপ্রিল|মে|জুন|জুলাই|আগস্ট|সেপ্টেম্বর|অক্টোবর|নভেম্বর|ডিসেম্বর)\\s+[0-9]{4})`,'i'),
+    new RegExp(label.source+`[^0-9A-Za-z০-৯]{0,100}((?:জানুয়ারি|জানুয়ারি|ফেব্রুয়ারি|ফেব্রুয়ারি|মার্চ|এপ্রিল|মে|জুন|জুলাই|আগস্ট|সেপ্টেম্বর|অক্টোবর|নভেম্বর|ডিসেম্বর)\\s*[0-9]{1,2}\\s*[0-9]{4})`,'i')
+  ];
+  for(const p of patterns){const m=raw.match(p);if(m){const d=parseDate(m[1]);if(d)return d}}
+  const loose=raw.match(/(?:deadline|closing|last\s+date|শেষ\s*তারিখ)[^\n]{0,140}?([0-9]{1,2}[\\/.\\-][0-9]{1,2}[\\/.\\-][0-9]{4})/i);if(loose){const d=parseDate(loose[1]);if(d)return d}
+  return null;
+}
+
 function open(d){return !!d&&d>=dhakaToday()}
 function days(d){return Math.ceil((new Date(d+'T00:00:00+06:00')-new Date(dhakaToday()+'T00:00:00+06:00'))/86400000)}
 function win(html,needle,b=1800,a=5200){const i=html.indexOf(needle);if(i<0)return strip(html.slice(0,7000));return strip(html.slice(Math.max(0,i-b),i+a))}
+function candidateContext(html,l){const start=l?.start??html.indexOf(l?.text||'');const end=l?.end??(start+(l?.text||'').length);if(start<0)return strip(html.slice(0,9000));const candidates=[];for(const tag of ['tr','li','article']){const open=html.lastIndexOf('<'+tag,start);const close=html.indexOf('</'+tag+'>',end);if(open>=0&&close>=0&&close-open<10000)candidates.push(strip(html.slice(open,close+tag.length+3)))}candidates.push(strip(html.slice(Math.max(0,start-2200),Math.min(html.length,end+5200))));return candidates.sort((a,b)=>{const ad=a.toLowerCase().includes('deadline')||a.toLowerCase().includes('শেষ')?0:1;const bd=b.toLowerCase().includes('deadline')||b.toLowerCase().includes('শেষ')?0:1;return ad-bd||a.length-b.length})[0]||''}
 function uniq(xs){const m=new Map();for(const x of xs)m.set(x.id,x);return [...m.values()]}
 function expReq(t){let n=[],m,r=/(?:at\s+least|minimum|min\.?|\bof\s+)(\d+(?:\.\d+)?)\s*(?:-|to)?\s*(\d+(?:\.\d+)?)?\s*years?/gi;while((m=r.exec(t||'')))n.push(Number(m[1]));return n.length?Math.min(...n):null}
 function ageReq(t){let m=String(t||'').match(/(?:maximum\s+age|age\s+limit|বয়স)[^0-9]{0,40}(\d{2})/i);return m?Number(m[1]):null}
@@ -75,10 +126,53 @@ function baseItem(source,title,detail,ctx,deadlineDate,group,org){if(!deadlineDa
 function withStats(items,stats){items.stats=stats;return items}
 function jobish(text){return /career|job|position|vacancy|apply|business|marketing|sales|growth|analyst|manager|officer|recruit|appointment|employment|join-us|work-with-us/i.test(text)}
 function sameHost(a,b){try{return new URL(a).hostname.replace(/^www\./,'')===new URL(b).hostname.replace(/^www\./,'')}catch{return false}}
-async function parsePage(html,s){const out=[],ls=links(html,s.url),stats={candidates:0,deadlineVerified:0,extracted:0,detailChecked:0};const pending=[];for(const l of ls){if(!l.href||l.text.length<5||l.text.length>220)continue;if(s.group==='government'&&!/(psc|exam|circular|notice|recruit|job|vacancy|appointment|teletalk)/i.test(l.text+' '+l.href))continue;if(s.id==='bb'&&!/(recruit|job|vacancy|appointment|officer|career)/i.test(l.text+' '+l.href))continue;stats.candidates++;const ctx=win(html,l.text),d=deadline(ctx)||deadline(l.text);if(d){stats.deadlineVerified++;const x=baseItem(s,l.text,l.href,ctx,d,s.group,s.group==='government'?'Government of Bangladesh':undefined);if(x)out.push(x)}else if(jobish(l.text+' '+l.href)&&sameHost(l.href,s.url))pending.push(l)}const detail=uniq(pending.map(l=>({id:l.href,...l}))).slice(0,3);stats.detailChecked=detail.length;const fetched=await mapLimit(detail,DETAIL_CONCURRENCY,async l=>{try{return {l,html:await fetchText(l.href)}}catch{return null}});for(const r of fetched){if(!r)continue;const ctx=strip(r.html).slice(0,9000),d=deadline(r.html)||deadline(ctx);if(!d)continue;stats.deadlineVerified++;const x=baseItem(s,r.l.text,r.l.href,ctx,d,s.group,s.group==='government'?'Government of Bangladesh':undefined);if(x)out.push(x)}stats.extracted=out.length;return withStats(uniq(out),stats)}
-async function parseCompany(html,s){const out=[],ls=links(html,s.url),stats={candidates:0,deadlineVerified:0,extracted:0,detailChecked:0},pending=[];for(const l of ls){if(!l.href||l.text.length<4||l.text.length>180||!jobish(l.text+' '+l.href))continue;stats.candidates++;const ctx=win(html,l.text),d=deadline(ctx)||deadline(l.text);if(d){stats.deadlineVerified++;const x=baseItem(s,l.text,l.href,ctx,d,s.group,s.name);if(x)out.push(x)}else if(sameHost(l.href,s.url))pending.push(l)}const detail=uniq(pending.map(l=>({id:l.href,...l}))).slice(0,3);stats.detailChecked=detail.length;const fetched=await mapLimit(detail,DETAIL_CONCURRENCY,async l=>{try{return {l,html:await fetchText(l.href)}}catch{return null}});for(const r of fetched){if(!r)continue;const ctx=strip(r.html).slice(0,9000),d=deadline(r.html)||deadline(ctx);if(!d)continue;stats.deadlineVerified++;const x=baseItem(s,r.l.text,r.l.href,ctx,d,s.group,s.name);if(x)out.push(x)}stats.extracted=out.length;return withStats(uniq(out),stats)}
-async function parseBdjobs(html,s){const candidates=links(html,s.url).filter(l=>l.href&&/bdjobs\.com\/h\/details\//i.test(l.href)&&l.text.length>=4&&l.text.length<=220);const unique=uniq(candidates.map(l=>({id:l.href,text:l.text,href:l.href}))).slice(0,MAX_DETAIL_PAGES);const stats={candidates:candidates.length,deadlineVerified:0,extracted:0,detailChecked:unique.length};const fetched=await mapLimit(unique,DETAIL_CONCURRENCY,async l=>{try{return {l,html:await fetchText(l.href)}}catch{return null}});const out=[];for(const r of fetched){if(!r)continue;const ctx=win(r.html,r.l.text,2400,8000),d=deadline(r.html)||deadline(ctx);if(!d)continue;stats.deadlineVerified++;const x=baseItem(s,r.l.text,r.l.href,ctx,d,s.group,'');if(x)out.push(x)}stats.extracted=out.length;return withStats(uniq(out),stats)}
-async function parsePortal(html,s){const pages=[{url:s.url,html}],stats={candidates:0,deadlineVerified:0,extracted:0,detailChecked:0};const child=links(html,s.url).filter(l=>l.href&&/(career|careers|jobs|job-opportun|vacanc|recruit|employment|join-us|work-with-us)/i.test(l.text+' '+l.href)&&l.href!==s.url).slice(0,2);const fetched=await mapLimit(child,DETAIL_CONCURRENCY,async l=>{try{return {l,html:await fetchText(l.href)}}catch{return null}});stats.detailChecked=fetched.filter(Boolean).length;for(const r of fetched)if(r)pages.push({url:r.l.href,html:r.html});const out=[];for(const page of pages){for(const l of links(page.html,page.url)){if(!l.href||l.text.length<4||l.text.length>180||!jobish(l.text+' '+l.href))continue;stats.candidates++;const ctx=win(page.html,l.text),d=deadline(ctx)||deadline(page.html)||deadline(l.text);if(!d)continue;stats.deadlineVerified++;const x=baseItem(s,l.text,l.href,ctx,d,s.group,s.name);if(x)out.push(x)}}stats.extracted=out.length;return withStats(uniq(out),stats)}
+async function inspectDetailLinks(pending,s,stats,out){
+  const detail=uniq(pending.map(l=>({id:l.href,...l}))).slice(0,DETAIL_PER_SOURCE);
+  stats.detailChecked+=detail.length;
+  const fetched=await mapLimit(detail,DETAIL_CONCURRENCY,async l=>{try{return {l,html:await fetchText(l.href)}}catch{return null}});
+  for(const r of fetched){if(!r)continue;const ctx=candidateContext(r.html,r.l)||strip(r.html).slice(0,12000);const d=deadline(r.html)||deadline(ctx);if(!d)continue;stats.deadlineFound++;if(!open(d))continue;stats.deadlineVerified++;const x=baseItem(s,r.l.text,r.l.href,ctx,d,s.group,s.group==='government'?'Government of Bangladesh':s.name);if(x)out.push(x)}
+}
+async function parsePage(html,s){
+  const out=[],ls=links(html,s.url),stats={candidates:0,deadlineFound:0,deadlineVerified:0,extracted:0,detailChecked:0},pending=[];
+  for(const l of ls){
+    if(!l.href||l.text.length<4||l.text.length>240)continue;
+    if(s.group==='government'&&!/(psc|exam|circular|notice|recruit|job|vacancy|appointment|teletalk|officer|assistant)/i.test(l.text+' '+l.href))continue;
+    if(s.id==='bb'&&!/(recruit|job|vacancy|appointment|officer|career|notice)/i.test(l.text+' '+l.href))continue;
+    stats.candidates++;
+    const ctx=candidateContext(html,l)||win(html,l.text),d=deadline(ctx)||deadline(l.text);
+    if(d){stats.deadlineFound++;if(!open(d))continue;stats.deadlineVerified++;const x=baseItem(s,l.text,l.href,ctx,d,s.group,s.group==='government'?'Government of Bangladesh':s.name);if(x)out.push(x)}
+    else if(jobish(l.text+' '+l.href))pending.push(l);
+  }
+  await inspectDetailLinks(pending,s,stats,out);
+  stats.extracted=out.length;return withStats(uniq(out),stats)
+}
+async function parseCompany(html,s){
+  const out=[],ls=links(html,s.url),stats={candidates:0,deadlineFound:0,deadlineVerified:0,extracted:0,detailChecked:0},pending=[];
+  for(const l of ls){if(!l.href||l.text.length<4||l.text.length>220||!jobish(l.text+' '+l.href))continue;stats.candidates++;const ctx=candidateContext(html,l)||win(html,l.text),d=deadline(ctx)||deadline(l.text);if(d){stats.deadlineFound++;if(!open(d))continue;stats.deadlineVerified++;const x=baseItem(s,l.text,l.href,ctx,d,s.group,s.name);if(x)out.push(x)}else if(sameHost(l.href,s.url)||/\/job|\/career|\/vacan|\/recruit/i.test(l.href))pending.push(l)}
+  await inspectDetailLinks(pending,s,stats,out);
+  stats.extracted=out.length;return withStats(uniq(out),stats)
+}
+async function parseBdjobs(html,s){
+  const candidates=links(html,s.url).filter(l=>l.href&&/bdjobs\.com\/h\/details\//i.test(l.href)&&l.text.length>=4&&l.text.length<=240);
+  const unique=uniq(candidates.map(l=>({id:l.href,...l}))).slice(0,MAX_DETAIL_PAGES);
+  const stats={candidates:candidates.length,deadlineFound:0,deadlineVerified:0,extracted:0,detailChecked:unique.length};
+  const fetched=await mapLimit(unique,DETAIL_CONCURRENCY,async l=>{try{return {l,html:await fetchText(l.href)}}catch{return null}});const out=[];
+  for(const r of fetched){if(!r)continue;const ctx=candidateContext(r.html,r.l)||win(r.html,r.l.text,4000,10000);const d=deadline(r.html)||deadline(ctx);if(!d)continue;stats.deadlineFound++;if(!open(d))continue;stats.deadlineVerified++;const x=baseItem(s,r.l.text,r.l.href,ctx,d,s.group,'');if(x)out.push(x)}
+  stats.extracted=out.length;return withStats(uniq(out),stats)
+}
+async function parsePortal(html,s){
+  const pages=[{url:s.url,html}],stats={candidates:0,deadlineFound:0,deadlineVerified:0,extracted:0,detailChecked:0},pending=[];
+  const child=links(html,s.url).filter(l=>l.href&&/(career|careers|jobs|job-opportun|vacanc|recruit|employment|join-us|work-with-us|notice|circular)/i.test(l.text+' '+l.href)&&l.href!==s.url).slice(0,3);
+  const fetched=await mapLimit(child,DETAIL_CONCURRENCY,async l=>{try{return {l,html:await fetchText(l.href)}}catch{return null}});stats.detailChecked=fetched.filter(Boolean).length;for(const r of fetched)if(r)pages.push({url:r.l.href,html:r.html});
+  const out=[];
+  for(const page of pages){for(const l of links(page.html,page.url)){if(!l.href||l.text.length<4||l.text.length>220||!jobish(l.text+' '+l.href))continue;stats.candidates++;const ctx=candidateContext(page.html,l)||win(page.html,l.text),d=deadline(ctx)||deadline(l.text);if(d){stats.deadlineFound++;if(!open(d))continue;stats.deadlineVerified++;const x=baseItem(s,l.text,l.href,ctx,d,s.group,s.name);if(x)out.push(x)}else if(/job|career|vacan|recruit|officer|manager|analyst|sales|marketing|business/i.test(l.text+' '+l.href))pending.push({...l,pageUrl:page.url})}}
+  // Second pass: inspect a bounded set of same-domain/career detail links that had no deadline on the listing page.
+  const detail=uniq(pending.map(l=>({id:l.href,...l}))).filter(l=>sameHost(l.href,s.url)||/\/job|\/career|\/vacan|\/recruit|\/position|\/opening/i.test(l.href)).slice(0,DETAIL_PER_SOURCE);
+  stats.detailChecked+=detail.length;
+  const fetched2=await mapLimit(detail,DETAIL_CONCURRENCY,async l=>{try{return {l,html:await fetchText(l.href)}}catch{return null}});
+  for(const r of fetched2){if(!r)continue;const ctx=candidateContext(r.html,r.l)||strip(r.html).slice(0,12000);const d=deadline(r.html)||deadline(ctx);if(!d)continue;stats.deadlineFound++;if(!open(d))continue;stats.deadlineVerified++;const x=baseItem(s,r.l.text,r.l.href,ctx,d,s.group,s.name);if(x)out.push(x)}
+  stats.extracted=out.length;return withStats(uniq(out),stats)
+}
 
 async function fetchText(url,attempt=0){
   const controller=new AbortController(); const timer=setTimeout(()=>controller.abort(),FETCH_TIMEOUT);
@@ -104,11 +198,11 @@ async function sync(profile){
    try{
      const html=await fetchText(s.url);
      const raw=s.id==='bdjobs'?await parseBdjobs(html,s):(s.kind==='page'||s.kind==='bank'?await parsePage(html,s):await parsePortal(html,s));
-     h.candidates=raw.stats?.candidates||0; h.deadlineVerified=raw.stats?.deadlineVerified||0; h.detailChecked=raw.stats?.detailChecked||0; h.extracted=raw.stats?.extracted||0;
+     h.candidates=raw.stats?.candidates||0; h.deadlineFound=raw.stats?.deadlineFound||0; h.deadlineVerified=raw.stats?.deadlineVerified||0; h.detailChecked=raw.stats?.detailChecked||0; h.extracted=raw.stats?.extracted||0;
      const ms=[];
      for(const it of uniq(raw)){const m=match(it,p);if(m.status==='matched'||(m.status==='needs-review'&&s.group.includes('bank'))){it.match=m;ms.push(it)}}
      h.ok=true;h.status='verified';h.count=ms.length;
-     h.note=ms.length?'Current profile-matched listings extracted.':h.deadlineVerified?'Current listings were deadline-verified but none matched the active profile threshold.':'Source reachable, but no listing with a verifiable current deadline was extracted.';
+     h.note=ms.length?'Current profile-matched listings extracted.':h.deadlineVerified?'Current listings were deadline-verified but none matched the active profile threshold.':h.deadlineFound?'Deadline dates were detected, but none were still open.':'Source reachable, but no listing with a verifiable deadline was extracted.';
      return {h,items:ms};
    }catch(e){
      h.status='unavailable';h.error=String(e.message||e).slice(0,180);return {h,items:[]};
@@ -117,10 +211,10 @@ async function sync(profile){
  for(const r of results){health[r.h.id]=r.h;all.push(...(r.items||[]));}
  // Scheduled scans intentionally do not run search-engine discovery; this keeps the 87-source cycle bounded and auditable.
  const items=uniq(all).filter(x=>x.deadline&&open(x.deadline)).sort((a,b)=>a.group.localeCompare(b.group)||a.deadline.localeCompare(b.deadline)||b.match.score-a.match.score);
- const successful=Object.values(health).filter(x=>x.ok).length, reachable=Object.values(health).filter(x=>x.status==='verified').length, discovery=Object.values(health).filter(x=>x.status==='discovery').length, failed=Object.values(health).filter(x=>!x.ok&&x.status==='unavailable').length, candidates=Object.values(health).reduce((n,x)=>n+(x.candidates||0),0), deadlineVerified=Object.values(health).reduce((n,x)=>n+(x.deadlineVerified||0),0);
+ const successful=Object.values(health).filter(x=>x.ok).length, reachable=Object.values(health).filter(x=>x.status==='verified').length, discovery=Object.values(health).filter(x=>x.status==='discovery').length, failed=Object.values(health).filter(x=>!x.ok&&x.status==='unavailable').length, candidates=Object.values(health).reduce((n,x)=>n+(x.candidates||0),0), deadlineFound=Object.values(health).reduce((n,x)=>n+(x.deadlineFound||0),0), deadlineVerified=Object.values(health).reduce((n,x)=>n+(x.deadlineVerified||0),0);
  const prev=read(FEED,{items:[]}).items||[],ids=new Set(prev.map(x=>x.id)),newMatches=items.filter(x=>!ids.has(x.id));
  const events=read(EVENTS,[]);for(const x of newMatches)events.push({id:'evt-'+x.id+'-'+Date.now(),type:'new-match',createdAt:now(),opportunity:x});write(EVENTS,events.slice(-500));
- const result={ok:reachable>0,version:'14.0',syncComplete:true,syncedAt:now(),freshUntil:new Date(Date.now()+FRESH_MS).toISOString(),todayDhaka:dhakaToday(),items,sourceHealth:health,sourceRegistry:sourceListForUI(),coverage:{publicBanks:PUBLIC_BANKS.length,privateBanks:PRIVATE_BANKS.length,mnc:MNC.length,tech:TECH.length,linkedin:'discovery-only',total:sources.length},sourceSummary:{total:sources.length,successful,reachable,discovery,failed,matched:items.length,candidates,deadlineVerified,startedAt:lastScanStarted,finishedAt:now(),durationMs:lastScanStarted?Date.now()-new Date(lastScanStarted).getTime():null},profileSummary:{capacity:p.capacity,threshold:p.threshold},newMatches:newMatches.map(x=>x.id)};
+ const result={ok:reachable>0,version:'15.0',syncComplete:true,syncedAt:now(),freshUntil:new Date(Date.now()+FRESH_MS).toISOString(),todayDhaka:dhakaToday(),items,sourceHealth:health,sourceRegistry:sourceListForUI(),coverage:{publicBanks:PUBLIC_BANKS.length,privateBanks:PRIVATE_BANKS.length,mnc:MNC.length,tech:TECH.length,linkedin:'discovery-only',total:sources.length},sourceSummary:{total:sources.length,successful,reachable,discovery,failed,matched:items.length,candidates,deadlineFound,deadlineVerified,startedAt:lastScanStarted,finishedAt:now(),durationMs:lastScanStarted?Date.now()-new Date(lastScanStarted).getTime():null},profileSummary:{capacity:p.capacity,threshold:p.threshold},newMatches:newMatches.map(x=>x.id)};
  result.scanState={...scanState(),lastScanFinished:result.syncedAt};
  write(FEED,result); lastScanFinished=result.syncedAt; return result;
  } finally {scanRunning=false;}
@@ -128,11 +222,11 @@ async function sync(profile){
 function current(){const f=read(FEED,{ok:false,items:[],sourceHealth:{},syncedAt:null});if(!f.ok||!f.syncedAt||Date.now()-new Date(f.syncedAt).getTime()>FRESH_MS)return {...f,ok:false,items:[],stale:true,message:'Live verification required'};return f}
 function send(res,st,d,type='application/json'){res.writeHead(st,{'content-type':type,'cache-control':'no-store'});res.end(type==='application/json'?JSON.stringify(d):d)}
 function file(res,f){try{const ext=path.extname(f);const type=ext==='.html'?'text/html':ext==='.js'?'application/javascript':ext==='.json'?'application/json':ext==='.css'?'text/css':'text/plain';send(res,200,fs.readFileSync(f),type)}catch{send(res,404,'Not found','text/plain')}}
-async function route(req,res){const u=new URL(req.url,'http://localhost');if(req.method==='GET'&&u.pathname==='/api/health')return send(res,200,{ok:true,version:'14.0',time:now(),scanState:scanState(),sources:Object.keys(SOURCES).length});if(req.method==='GET'&&u.pathname==='/api/opportunities')return send(res,200,current());if(req.method==='GET'&&u.pathname==='/api/sources')return send(res,200,{ok:true,sources:sourceListForUI(),coverage:{publicBanks:PUBLIC_BANKS.length,privateBanks:PRIVATE_BANKS.length,mnc:MNC.length,tech:TECH.length,total:Object.keys(SOURCES).length},scanState:scanState()});
+async function route(req,res){const u=new URL(req.url,'http://localhost');if(req.method==='GET'&&u.pathname==='/api/health')return send(res,200,{ok:true,version:'15.0',time:now(),scanState:scanState(),sources:Object.keys(SOURCES).length});if(req.method==='GET'&&u.pathname==='/api/opportunities')return send(res,200,current());if(req.method==='GET'&&u.pathname==='/api/sources')return send(res,200,{ok:true,sources:sourceListForUI(),coverage:{publicBanks:PUBLIC_BANKS.length,privateBanks:PRIVATE_BANKS.length,mnc:MNC.length,tech:TECH.length,total:Object.keys(SOURCES).length},scanState:scanState()});
 if(req.method==='GET'&&u.pathname==='/api/scan-status')return send(res,200,{ok:true,scanState:scanState(),sourceSummary:read(FEED,{sourceSummary:null}).sourceSummary||null});if(req.method==='GET'&&u.pathname==='/api/events')return send(res,200,{ok:true,events:read(EVENTS,[]).slice(-100)});if(req.method==='POST'&&u.pathname==='/api/sync'){let b='';req.on('data',c=>b+=c);req.on('end',async()=>{try{send(res,200,await sync(b?JSON.parse(b).profile:{}))}catch(e){send(res,500,{ok:false,error:String(e.message||e),items:[]})}});return}if(req.method==='GET'&&u.pathname==='/api/sync'){try{return send(res,200,await sync(read(FEED,{}).profileSummary||{}))}catch(e){return send(res,500,{ok:false,error:String(e.message||e),items:[]})}}if(req.method==='GET'){const f=path.join(ROOT,u.pathname==='/'?'index.html':u.pathname.replace(/^\//,''));if(f.startsWith(ROOT)&&fs.existsSync(f)&&fs.statSync(f).isFile())return file(res,f)}send(res,404,'Not found','text/plain')}
 if(require.main===module){
  const srv=http.createServer(route);
- srv.listen(PORT,()=>{console.log(`Orbit V14 running at http://localhost:${PORT}`);if(process.env.ORBIT_SKIP_INITIAL_SCAN!=='1')setTimeout(()=>{const p=read(FEED,{profileSummary:{}}).profileSummary||{};sync(p).catch(()=>{})},1500)});
+ srv.listen(PORT,()=>{console.log(`Orbit V15 running at http://localhost:${PORT}`);if(process.env.ORBIT_SKIP_INITIAL_SCAN!=='1')setTimeout(()=>{const p=read(FEED,{profileSummary:{}}).profileSummary||{};sync(p).catch(()=>{})},1500)});
  setInterval(()=>{const p=read(FEED,{profileSummary:{}}).profileSummary||{};sync(p).catch(()=>{})},SCAN_INTERVAL_MS);
 }
-module.exports={sync,scanState,sourceListForUI,profileFrom};
+module.exports={sync,scanState,sourceListForUI,profileFrom,parseDate,deadline,candidateContext};
