@@ -9,6 +9,8 @@ async function main() {
     try { profile = JSON.parse(fs.readFileSync('./data/profile.json','utf8')); } catch {}
   }
   const result = await sync(profileFrom(profile));
+  const ss = result.sourceSummary || {};
+  console.log(`Orbit ${result.version}: ${ss.reachable || 0}/${ss.total || 87} reachable · ${ss.candidates || 0} candidates · ${ss.deadlineFound || 0} deadlines found · ${ss.deadlineVerified || 0} open deadlines · ${ss.matched || 0} matches`);
   console.log(JSON.stringify({
     version: result.version,
     profileConfigured,
